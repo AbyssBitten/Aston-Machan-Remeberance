@@ -1,0 +1,468 @@
+@import "tailwindcss";
+
+@theme {
+  --color-void: #04050a;
+  --color-ink: #eceaf5;
+  --color-mist: #9aa0b5;
+  --color-gold: #f4cd86;
+  --color-gold-bright: #ffe6b0;
+  --color-ember: #d98b5f;
+  --color-tide: #7fd7d0;
+  --font-display: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+  --edge-glow: 0 0 60px -12px rgba(244, 205, 134, 0.55);
+}
+
+html,
+body {
+  background-color: #04050a;
+}
+
+body {
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: rgba(244, 205, 134, 0.28);
+  color: #fff;
+}
+
+/* ---------------------------------------------------------------- backdrop */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background:
+    radial-gradient(115% 85% at 50% -10%, rgba(46, 54, 96, 0.55) 0%, rgba(4, 5, 10, 0) 60%),
+    radial-gradient(70% 60% at 12% 100%, rgba(24, 68, 82, 0.4) 0%, rgba(4, 5, 10, 0) 62%),
+    radial-gradient(60% 55% at 92% 78%, rgba(94, 52, 74, 0.34) 0%, rgba(4, 5, 10, 0) 60%),
+    #04050a;
+}
+
+.backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+  background-size: 3px 3px;
+  opacity: 0.35;
+  mix-blend-mode: overlay;
+}
+
+.aurora {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.5;
+  animation: aurora-drift 26s ease-in-out infinite alternate;
+}
+
+.aurora-a {
+  width: 46vw;
+  height: 46vw;
+  left: -8vw;
+  top: -12vw;
+  background: radial-gradient(circle, rgba(120, 96, 220, 0.4), transparent 68%);
+}
+
+.aurora-b {
+  width: 40vw;
+  height: 40vw;
+  right: -6vw;
+  top: 18vh;
+  background: radial-gradient(circle, rgba(244, 205, 134, 0.24), transparent 66%);
+  animation-duration: 34s;
+  animation-delay: -8s;
+}
+
+.aurora-c {
+  width: 52vw;
+  height: 34vw;
+  left: 24vw;
+  bottom: -16vw;
+  background: radial-gradient(circle, rgba(47, 130, 140, 0.28), transparent 70%);
+  animation-duration: 42s;
+  animation-delay: -16s;
+}
+
+@keyframes aurora-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(4vw, -3vh, 0) scale(1.12);
+  }
+  100% {
+    transform: translate3d(-3vw, 4vh, 0) scale(0.96);
+  }
+}
+
+/* ------------------------------------------------------------- entrances */
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes letter-in {
+  0% {
+    opacity: 0;
+    transform: translateY(0.55em) rotateX(55deg);
+    filter: blur(8px);
+  }
+  60% {
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+    filter: blur(0);
+  }
+}
+
+@keyframes rise-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, -26px, 0);
+    filter: blur(10px);
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-fade-in {
+  animation: fade-in 1.2s ease-out both;
+}
+
+.animate-rise-out {
+  animation: rise-out 0.8s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.letter {
+  display: inline-block;
+  white-space: pre;
+  animation: letter-in 1.1s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* ---------------------------------------------------------------- glow */
+
+.glow-text {
+  text-shadow:
+    0 0 26px rgba(244, 205, 134, 0.35),
+    0 0 90px rgba(244, 205, 134, 0.18);
+}
+
+.gold-rule {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(244, 205, 134, 0.55), transparent);
+}
+
+@keyframes sheen {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+.sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.32) 48%,
+    transparent 76%
+  );
+  animation: sheen 4.5s ease-in-out infinite;
+}
+
+/* ---------------------------------------------------------------- button */
+
+.remember-btn {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  border-radius: 999px;
+  padding: 1.15rem 3.4rem;
+  font-size: 1.05rem;
+  letter-spacing: 0.36em;
+  text-transform: uppercase;
+  color: #1a1207;
+  background: linear-gradient(180deg, #ffe7b6 0%, #f4cd86 46%, #cf9f52 100%);
+  box-shadow:
+    0 0 0 1px rgba(255, 235, 190, 0.6),
+    0 18px 50px -18px rgba(244, 205, 134, 0.75),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  transition:
+    transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.5s ease,
+    filter 0.4s ease;
+}
+
+.remember-btn:hover {
+  transform: translateY(-3px) scale(1.03);
+  box-shadow:
+    0 0 0 1px rgba(255, 240, 205, 0.85),
+    0 26px 70px -16px rgba(244, 205, 134, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  filter: saturate(1.1);
+}
+
+.remember-btn:active {
+  transform: translateY(0) scale(0.985);
+}
+
+.remember-btn::before {
+  content: "";
+  position: absolute;
+  inset: -40% -20%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    rgba(255, 255, 255, 0.55) 40deg,
+    transparent 90deg
+  );
+  animation: spin-slow 6s linear infinite;
+  z-index: -1;
+  opacity: 0.6;
+}
+
+@keyframes spin-slow {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+.halo {
+  position: absolute;
+  inset: -60% -30%;
+  border-radius: 50%;
+  border: 1px solid rgba(244, 205, 134, 0.35);
+  animation: halo-out 3.4s ease-out infinite;
+  pointer-events: none;
+}
+
+.halo-2 {
+  animation-delay: 1.7s;
+}
+
+@keyframes halo-out {
+  0% {
+    transform: scale(0.72);
+    opacity: 0;
+  }
+  35% {
+    opacity: 0.75;
+  }
+  100% {
+    transform: scale(1.25);
+    opacity: 0;
+  }
+}
+
+/* ------------------------------------------------------------------ map */
+
+.map-shell {
+  position: relative;
+  border-radius: 1.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background:
+    linear-gradient(180deg, rgba(11, 15, 28, 0.9), rgba(6, 8, 16, 0.94));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 40px 120px -40px rgba(0, 0, 0, 0.9);
+  overflow: hidden;
+}
+
+.map-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: pan-y;
+}
+
+.country {
+  transition:
+    fill 0.9s ease,
+    stroke 0.7s ease,
+    filter 0.7s ease,
+    opacity 0.7s ease;
+  cursor: pointer;
+  vector-effect: non-scaling-stroke;
+}
+
+.country-dim {
+  fill: rgba(148, 163, 197, 0.1);
+  stroke: rgba(160, 175, 210, 0.16);
+}
+
+.country-lit {
+  stroke: rgba(255, 236, 195, 0.5);
+  filter: drop-shadow(0 0 6px rgba(244, 205, 134, 0.45));
+}
+
+.country-active {
+  stroke: rgba(255, 245, 220, 0.95);
+  filter: drop-shadow(0 0 10px rgba(255, 226, 160, 0.85));
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.72;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.breathe {
+  animation: breathe 3.6s ease-in-out infinite;
+}
+
+@keyframes ping-out {
+  0% {
+    r: 2;
+    opacity: 0.9;
+    stroke-width: 1.6;
+  }
+  100% {
+    r: 26;
+    opacity: 0;
+    stroke-width: 0.4;
+  }
+}
+
+.ping {
+  animation: ping-out 4s ease-out infinite;
+}
+
+.marker-dot {
+  animation: marker-in 0.9s cubic-bezier(0.22, 1, 0.36, 1) both,
+    breathe 3s ease-in-out 0.9s infinite;
+}
+
+@keyframes marker-in {
+  from {
+    opacity: 0;
+    transform: scale(0.2);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.map-label {
+  animation: fade-in 1.4s ease-out 0.5s both;
+}
+
+/* ---------------------------------------------------------------- cards */
+
+.card {
+  position: relative;
+  border-radius: 1.1rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: linear-gradient(180deg, rgba(19, 23, 40, 0.72), rgba(9, 11, 20, 0.72));
+  backdrop-filter: blur(12px);
+  transition:
+    transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.5s ease,
+    box-shadow 0.5s ease;
+}
+
+.card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(244, 205, 134, 0.3);
+  box-shadow: 0 30px 60px -35px rgba(244, 205, 134, 0.5);
+}
+
+.tally-bar {
+  height: 2px;
+  background: linear-gradient(90deg, rgba(244, 205, 134, 0.9), rgba(127, 215, 208, 0.5));
+  box-shadow: 0 0 12px rgba(244, 205, 134, 0.6);
+  transition: width 1.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes ticker-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ticker-row {
+  animation: ticker-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.pulse-dot {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #7fd7d0;
+  box-shadow: 0 0 10px #7fd7d0;
+}
+
+.pulse-dot::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1px solid rgba(127, 215, 208, 0.6);
+  animation: halo-out 2.4s ease-out infinite;
+}
+
+.mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  letter-spacing: 0.06em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
