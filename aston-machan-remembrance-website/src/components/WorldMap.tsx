@@ -1,15 +1,16 @@
 "use client";
 
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import worldMap from "@/data/world-map.json";
-import { COUNTRY_META, type DescribedCountry } from "@/lib/countries";
+import type { DescribedCountry } from "@/lib/countries";
 import type { StatsPayload } from "@/lib/stats";
 
 type Geometry = {
@@ -19,91 +20,115 @@ type Geometry = {
   d: string;
   cx: number;
   cy: number;
+  bw: number;
+  bh: number;
 };
 
 const GEOMETRY = worldMap.countries as Geometry[];
-const BY_CODE = new Map(GEOMETRY.map((c) => [c.code, c]));
+const GEOMETRY_BY_CODE = new Map(GEOMETRY.map((c) => [c.code, c]));
 
-const W = worldMap.width;
-const H = worldMap.height;
-const CX = W / 2;
-const CY = H / 2;
-const MIN_Z = 1;
-const MAX_Z = 8;
+const MIN_K = 1;
+const MAX_K = 9;
+const VBW = worldMap.width;
+const VBH = worldMap.height;
 
-type View = { z: number; x: number; y: number };
+type Tally = Map<string, { count: number; today: number; emoji: string }>;
 
-const clamp = (value: number, min: number, max: number) =>
-  Math.min(max, Math.max(min, value));
+const clamp = (min: number, value: number, max: number) => Math.min(max, Math.max(min, value));
 
-/** Keeps the world from being flung off the edge of its own frame. */
-function clampView(view: View): View {
-  const z = clamp(view.z, MIN_Z, MAX_Z);
-  if (z <= 1.001) return { z, x: 0, y: 0 };
-  const maxX = (z - 1) * CX + 40;
-  const maxY = (z - 1) * CY + 30;
-  return { z, x: clamp(view.x, -maxX, maxX), y: clamp(view.y, -maxY, maxY) };
-}
-
-/**
- * The SVG is letterboxed inside its frame (preserveAspectRatio: meet), and it
- * scales uniformly. One shared unit therefore converts screen pixels to map
- * units on BOTH axes — using width for x and height for y would make vertical
- * drags run at the wrong speed on any frame that is not exactly 2:1.
- */
-function metrics(rect: DOMRect) {
-  const unit = Math.min(rect.width / W, rect.height / H);
+function tone(count: number, max: number) {
+  if (count <= 0) return null;
+  const t = Math.pow(count / Math.max(1, max), 0.5);
   return {
-    unit,
-    ox: (rect.width - W * unit) / 2,
-    oy: (rect.height - H * unit) / 2,
+    fill: `rgba(244, ${Math.round(198 + 34 * t)}, ${Math.round(120 + 40 * t)}, ${(
+      0.2 +
+      0.68 * t
+    ).toFixed(3)})`,
   };
 }
 
-function glow(count: number, max: number) {
-  if (count <= 0) return null;
-  const t = Math.pow(count / Math.max(1, max), 0.5);
-  return `rgba(244, ${Math.round(198 + 34 * t)}, ${Math.round(120 + 40 * t)}, ${(
-    0.2 + 0.68 * t
-  ).toFixed(3)})`;
-}
-
-export type WorldMapProps = {
-  stats: StatsPayload;
-  yourCountry: DescribedCountry | null;
+/* --------------------------------------------------------------------------
+ * Country paths. Memoised on the tally so panning, zooming and hovering never
+ * re-render 177 <path> nodes.
+ * ----------------------------------------------------------------------- */
+const CountryPaths = memo(function CountryPaths({
+  tally,
+  maxCount,
+  youCode,
+  awake,
+}: {
+  tally: Tally;
+  maxCount: number;
+  youCode: string | null;
   awake: boolean;
-  onSelectCountry?: (countryCode: string) => void;
-  busy?: boolean;
-};
+}) {
+  return (
+    <g>
+      {GEOMETRY.map((country) => {
+        const entry = tally.get(country.code);
+        const lit = tone(entry?.count ?? 0, maxCount);
+        const isYou = country.code === youCode;
+        const alive = (entry?.today ?? 0) > 0;
+        return (
+          <path
+            key={country.code}
+            data-code={country.code}
+            d={country.d}
+            className={[
+              "country",
+              lit ? "country-lit" : "country-dim",
+              isYou ? "country-active" : "",
+              alive && awake ? "breathe" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            fill={lit?.fill ?? undefined}
+            strokeWidth={isYou ? 0.9 : 0.5}
+          />
+        );
+      })}
+    </g>
+  );
+});
 
 export default function WorldMap({
   stats,
   yourCountry,
   awake,
-  onSelectCountry,
-  busy = false,
-}: WorldMapProps) {
-  const shellRef = useRef<HTMLDivElement | null>(null);
+}: {
+  stats: StatsPayload;
+  yourCountry: DescribedCountry | null;
+  awake: boolean;
+}) {
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const layerRef = useRef<HTMLDivElement | null>(null);
+  const view = useRef({ k: 1, x: 0, y: 0 });
+  const size = useRef({ w: 0, h: 0 });
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const gesture = useRef<{
+    startK: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    dist: number;
+    moved: number;
+    beganAt: number;
+  } | null>(null);
+  const lastTap = useRef(0);
+  const rafPending = useRef(false);
 
-  const [view, setView] = useState<View>({ z: 1, x: 0, y: 0 });
-  const [smooth, setSmooth] = useState(false);
-  const [grabbing, setGrabbing] = useState(false);
-  const [selectedCode, setSelectedCode] = useState<string | null>(null);
-  const [hoverCode, setHoverCode] = useState<string | null>(null);
-  const [touchUsed, setTouchUsed] = useState(false);
+  const [zoomUi, setZoomUi] = useState(1);
+  const [vpSize, setVpSize] = useState({ w: 0, h: 0 });
+  const [panning, setPanning] = useState(false);
+  const [interacted, setInteracted] = useState(false);
+  const [hover, setHover] = useState<{
+    code: string;
+    x: number;
+    y: number;
+    sticky: boolean;
+  } | null>(null);
 
-  const viewRef = useRef(view);
-  useEffect(() => {
-    viewRef.current = view;
-  }, [view]);
-
-  const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
-  const pinchRef = useRef<{ dist: number; z: number; mx: number; my: number } | null>(null);
-  /** Stays true until the NEXT gesture begins, so the click that follows a pan is ignored. */
-  const movedRef = useRef(false);
-  const tapRef = useRef<{ t: number; x: number; y: number } | null>(null);
-
-  /* ------------------------------------------------------------- tallies */
   const tally = useMemo(() => {
     const map = new Map<string, { count: number; today: number; emoji: string }>();
     for (const row of stats.countries) {
@@ -117,14 +142,14 @@ export default function WorldMap({
     [stats.countries],
   );
 
-  const you = yourCountry ? BY_CODE.get(yourCountry.code) ?? null : null;
+  const you = yourCountry ? GEOMETRY_BY_CODE.get(yourCountry.code) ?? null : null;
 
   const pings = useMemo(() => {
     const seen = new Set<string>();
     const out: { code: string; cx: number; cy: number; delay: number }[] = [];
     for (const entry of stats.recent) {
       if (seen.has(entry.code)) continue;
-      const geo = BY_CODE.get(entry.code);
+      const geo = GEOMETRY_BY_CODE.get(entry.code);
       if (!geo) continue;
       seen.add(entry.code);
       out.push({ code: entry.code, cx: geo.cx, cy: geo.cy, delay: out.length * 0.55 });
@@ -133,558 +158,601 @@ export default function WorldMap({
     return out;
   }, [stats.recent]);
 
-  /* --------------------------------------------------------- view driver */
-  const applyView = useCallback((next: View, animate = false) => {
-    const clamped = clampView(next);
-    viewRef.current = clamped;
-    setView(clamped);
-    if (animate) {
-      setSmooth(true);
-      window.setTimeout(() => setSmooth(false), 430);
+  /* ------------------------------------------------------------ transform */
+  const measure = useCallback(() => {
+    const el = viewportRef.current;
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      size.current = { w: rect.width, h: rect.height };
     }
+    return size.current;
   }, []);
 
-  /** Zoom so the map point under (clientX, clientY) stays under it. */
-  const zoomAt = useCallback(
-    (nextZoom: number, clientX: number, clientY: number, animate = false) => {
-      const shell = shellRef.current;
-      if (!shell) return;
-      const rect = shell.getBoundingClientRect();
-      const { unit, ox, oy } = metrics(rect);
-      const vx = (clientX - rect.left - ox) / unit;
-      const vy = (clientY - rect.top - oy) / unit;
-      const cur = viewRef.current;
-      const mx = (vx - CX - cur.x) / cur.z + CX;
-      const my = (vy - CY - cur.y) / cur.z + CY;
-      const z = clamp(nextZoom, MIN_Z, MAX_Z);
-      applyView({ z, x: vx - CX - (mx - CX) * z, y: vy - CY - (my - CY) * z }, animate);
+  /** Mirrors the ref into state, but only on resize — tooltips need render-safe numbers. */
+  const syncSize = useCallback(() => {
+    const { w, h } = measure();
+    setVpSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+  }, [measure]);
+
+  const apply = useCallback((animated: boolean) => {
+    const { w, h } = size.current;
+    const next = view.current;
+    next.k = clamp(MIN_K, next.k, MAX_K);
+    next.x = clamp(w - w * next.k, next.x, 0);
+    next.y = clamp(h - h * next.k, next.y, 0);
+    const el = layerRef.current;
+    if (!el) return;
+    el.style.transition = animated ? "transform 620ms cubic-bezier(0.22, 1, 0.36, 1)" : "none";
+    el.style.transform = `translate3d(${next.x.toFixed(2)}px, ${next.y.toFixed(2)}px, 0) scale(${
+      next.k.toFixed(4)
+    })`;
+  }, []);
+
+  const commit = useCallback(() => {
+    setZoomUi(view.current.k);
+    setInteracted(true);
+  }, []);
+
+  /** Zoom about a point in viewport pixels, keeping that point anchored. */
+  const zoomAbout = useCallback(
+    (factor: number, px: number, py: number, animated = true) => {
+      measure();
+      const next = view.current;
+      const k = clamp(MIN_K, next.k * factor, MAX_K);
+      const ratio = k / next.k;
+      next.x = px - (px - next.x) * ratio;
+      next.y = py - (py - next.y) * ratio;
+      next.k = k;
+      if (k <= MIN_K + 0.001) {
+        next.x = 0;
+        next.y = 0;
+      }
+      apply(animated);
+      commit();
     },
-    [applyView],
+    [apply, commit, measure],
   );
 
-  const zoomByButton = useCallback(
-    (factor: number) => {
-      const shell = shellRef.current;
-      if (!shell) return;
-      const rect = shell.getBoundingClientRect();
-      zoomAt(viewRef.current.z * factor, rect.left + rect.width / 2, rect.top + rect.height / 2, true);
+  const focusPoint = useCallback(
+    (cx: number, cy: number, bw: number, bh: number) => {
+      const { w, h } = measure();
+      if (!w || !h) return;
+      // viewBox -> viewport pixels
+      const sx = w / VBW;
+      const sy = h / VBH;
+      const k = clamp(1.4, Math.min(w / (bw * sx * 1.9), h / (bh * sy * 2.4)), 5.5);
+      view.current.k = k;
+      view.current.x = w / 2 - k * cx * sx;
+      view.current.y = h / 2 - k * cy * sy;
+      apply(true);
+      commit();
     },
-    [zoomAt],
+    [apply, commit, measure],
   );
 
-  const resetView = useCallback(() => {
-    applyView({ z: 1, x: 0, y: 0 }, true);
-  }, [applyView]);
+  const fit = useCallback(() => {
+    view.current = { k: 1, x: 0, y: 0 };
+    apply(true);
+    commit();
+  }, [apply, commit]);
 
-  const focusCountry = useCallback(
-    (code: string, zoomLevel = 3.4) => {
-      const geo = BY_CODE.get(code);
-      if (!geo) return;
-      applyView(
-        { z: zoomLevel, x: (CX - geo.cx) * zoomLevel, y: (CY - geo.cy) * zoomLevel },
-        true,
-      );
-    },
-    [applyView],
-  );
+  const centerOnMe = useCallback(() => {
+    if (!you) {
+      zoomAbout(1.8, size.current.w / 2, size.current.h / 2);
+      return;
+    }
+    focusPoint(you.cx, you.cy, you.bw, you.bh);
+  }, [you, focusPoint, zoomAbout]);
 
-  /* ------------------------------------------------- touch: pan & pinch */
+  /* --------------------------------------------------- sizing + wheel zoom */
   useEffect(() => {
-    const shell = shellRef.current;
-    if (!shell) return;
+    syncSize();
+    apply(false);
+    const el = viewportRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      syncSize();
+      apply(false);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [syncSize, apply]);
 
-    const onTouchStart = (event: TouchEvent) => {
-      setTouchUsed(true);
-      movedRef.current = false;
-      setSmooth(false);
-
-      if (event.touches.length === 2) {
-        event.preventDefault();
-        const [t0, t1] = [event.touches[0], event.touches[1]];
-        const rect = shell.getBoundingClientRect();
-        const { unit, ox, oy } = metrics(rect);
-        const vx = (t0.clientX + t1.clientX) / 2 - rect.left - ox;
-        const vy = (t0.clientY + t1.clientY) / 2 - rect.top - oy;
-        const cur = viewRef.current;
-        pinchRef.current = {
-          dist: Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY) || 1,
-          z: cur.z,
-          mx: (vx / unit - CX - cur.x) / cur.z + CX,
-          my: (vy / unit - CY - cur.y) / cur.z + CY,
-        };
-        dragRef.current = null;
-        return;
-      }
-
-      const touch = event.touches[0];
-      if (!touch) return;
-      const cur = viewRef.current;
-      if (cur.z > 1.02) event.preventDefault();
-      dragRef.current = { x: touch.clientX, y: touch.clientY, panX: cur.x, panY: cur.y };
-    };
-
-    const onTouchMove = (event: TouchEvent) => {
-      const shell2 = shellRef.current;
-      if (!shell2) return;
-      const rect = shell2.getBoundingClientRect();
-      const { unit, ox, oy } = metrics(rect);
-
-      const pinch = pinchRef.current;
-      if (event.touches.length === 2 && pinch) {
-        event.preventDefault();
-        movedRef.current = true;
-        const [t0, t1] = [event.touches[0], event.touches[1]];
-        const dist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
-        const z = clamp((pinch.z * dist) / pinch.dist, MIN_Z, MAX_Z);
-        const vx = ((t0.clientX + t1.clientX) / 2 - rect.left - ox) / unit;
-        const vy = ((t0.clientY + t1.clientY) / 2 - rect.top - oy) / unit;
-        applyView({ z, x: vx - CX - (pinch.mx - CX) * z, y: vy - CY - (pinch.my - CY) * z });
-        return;
-      }
-
-      const drag = dragRef.current;
-      const touch = event.touches[0];
-      if (!drag || !touch || event.touches.length !== 1) return;
-
-      const dx = touch.clientX - drag.x;
-      const dy = touch.clientY - drag.y;
-      if (Math.hypot(dx, dy) > 6) movedRef.current = true;
-
-      // Below 1x the page keeps its normal vertical scroll; zoomed in, we pan.
-      if (viewRef.current.z > 1.02) {
-        event.preventDefault();
-        applyView({
-          z: viewRef.current.z,
-          x: drag.panX + dx / unit,
-          y: drag.panY + dy / unit,
-        });
-      }
-    };
-
-    const onTouchEnd = (event: TouchEvent) => {
-      if (event.touches.length < 2) pinchRef.current = null;
-      if (event.touches.length > 0) return;
-      dragRef.current = null;
-
-      // double-tap: zoom to the spot, or pull back out to the whole world
-      const touch = event.changedTouches[0];
-      if (!touch || movedRef.current) return;
-      const last = tapRef.current;
-      if (
-        last &&
-        event.timeStamp - last.t < 330 &&
-        Math.hypot(touch.clientX - last.x, touch.clientY - last.y) < 34
-      ) {
-        tapRef.current = null;
-        setSelectedCode(null);
-        if (viewRef.current.z > 1.6) resetView();
-        else zoomAt(2.8, touch.clientX, touch.clientY, true);
-      } else {
-        tapRef.current = { t: event.timeStamp, x: touch.clientX, y: touch.clientY };
-      }
-    };
-
-    shell.addEventListener("touchstart", onTouchStart, { passive: false });
-    shell.addEventListener("touchmove", onTouchMove, { passive: false });
-    shell.addEventListener("touchend", onTouchEnd);
-    shell.addEventListener("touchcancel", onTouchEnd);
-    return () => {
-      shell.removeEventListener("touchstart", onTouchStart);
-      shell.removeEventListener("touchmove", onTouchMove);
-      shell.removeEventListener("touchend", onTouchEnd);
-      shell.removeEventListener("touchcancel", onTouchEnd);
-    };
-  }, [applyView, resetView, zoomAt]);
-
-  /* ------------------------------------------------------- wheel (native) */
   useEffect(() => {
-    const shell = shellRef.current;
-    if (!shell) return;
-
-    // React attaches wheel passively, so preventDefault only works from here.
+    const el = viewportRef.current;
+    if (!el) return;
+    // Native listener so we can preventDefault (React registers wheel passive).
     const onWheel = (event: WheelEvent) => {
-      if (!event.deltaY) return;
-      const pinchGesture = event.ctrlKey || event.metaKey;
-      // Leave ordinary page scrolling alone until the visitor is exploring.
-      if (!pinchGesture && viewRef.current.z <= 1.02) return;
+      const wantsZoom = event.ctrlKey || event.metaKey;
+      if (!wantsZoom) return; // leave plain scrolling to the page
       event.preventDefault();
-      zoomAt(viewRef.current.z * Math.exp(-event.deltaY * 0.0016), event.clientX, event.clientY);
+      const rect = el.getBoundingClientRect();
+      zoomAbout(
+        Math.exp(-event.deltaY * 0.0022),
+        event.clientX - rect.left,
+        event.clientY - rect.top,
+        false,
+      );
     };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [zoomAbout]);
 
-    shell.addEventListener("wheel", onWheel, { passive: false });
-    return () => shell.removeEventListener("wheel", onWheel);
-  }, [zoomAt]);
-
-  /* --------------------------------------------------------- mouse drag */
-  const onMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    movedRef.current = false;
-    setSmooth(false);
-    setGrabbing(true);
-    const cur = viewRef.current;
-    dragRef.current = { x: event.clientX, y: event.clientY, panX: cur.x, panY: cur.y };
-  }, []);
-
-  const onMouseMove = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) => {
-      const drag = dragRef.current;
-      const shell = shellRef.current;
-      if (!drag || !shell) return;
-      const dx = event.clientX - drag.x;
-      const dy = event.clientY - drag.y;
-      if (Math.hypot(dx, dy) > 5) movedRef.current = true;
-      const { unit } = metrics(shell.getBoundingClientRect());
-      applyView({ z: viewRef.current.z, x: drag.panX + dx / unit, y: drag.panY + dy / unit });
+  /* ------------------------------------------------------ pointer gestures */
+  const beginGesture = useCallback(
+    (clientX: number, clientY: number) => {
+      const rect = viewportRef.current?.getBoundingClientRect();
+      const first = pointers.current.values().next().value as { x: number; y: number } | undefined;
+      const px = rect ? clientX - rect.left : 0;
+      const py = rect ? clientY - rect.top : 0;
+      gesture.current = {
+        startK: view.current.k,
+        startX: view.current.x,
+        startY: view.current.y,
+        originX: first?.x ?? px,
+        originY: first?.y ?? py,
+        dist: 0,
+        moved: 0,
+        beganAt: performance.now(),
+      };
     },
-    [applyView],
+    [],
   );
 
-  const endMouse = useCallback(() => {
-    dragRef.current = null;
-    setGrabbing(false);
-  }, []);
+  const onPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const rect = viewportRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      size.current = { w: rect.width, h: rect.height };
+      const px = event.clientX - rect.left;
+      const py = event.clientY - rect.top;
+      pointers.current.set(event.pointerId, { x: px, y: py });
+      viewportRef.current?.setPointerCapture?.(event.pointerId);
+      if (pointers.current.size === 1) {
+        beginGesture(event.clientX, event.clientY);
+        if (view.current.k > MIN_K + 0.001) setPanning(true);
+      } else if (pointers.current.size === 2) {
+        const [a, b] = [...pointers.current.values()];
+        gesture.current = {
+          startK: view.current.k,
+          startX: view.current.x,
+          startY: view.current.y,
+          originX: (a.x + b.x) / 2,
+          originY: (a.y + b.y) / 2,
+          dist: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+          moved: 0,
+          beganAt: performance.now(),
+        };
+        setPanning(true);
+        setHover(null);
+      }
+    },
+    [beginGesture],
+  );
 
-  /* ------------------------------------------------------------ picking */
-  const pickCountry = useCallback((code: string) => {
-    if (movedRef.current) return;
-    setSelectedCode(code);
-  }, []);
+  const onPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const active = pointers.current.get(event.pointerId);
+      const rect = viewportRef.current?.getBoundingClientRect();
 
-  const clearIfBackground = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    if (movedRef.current) return;
-    const target = event.target as (Element & { dataset?: DOMStringMap }) | null;
-    if (target?.dataset?.country) return;
-    setSelectedCode(null);
-  }, []);
+      /* Mouse hover tooltip — routed through a single delegated hit-test, so the
+         177 paths need no listeners of their own. */
+      if (!active && event.pointerType === "mouse" && !gesture.current && rect) {
+        const target = event.target as Element | null;
+        const node = target?.closest?.("[data-code]") as Element | null;
+        const code = node?.getAttribute("data-code") ?? null;
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        if (rafPending.current) return;
+        rafPending.current = true;
+        requestAnimationFrame(() => {
+          rafPending.current = false;
+          setHover((prev) => {
+            if (!code) return prev && !prev.sticky ? null : prev;
+            if (prev && prev.code === code && !prev.sticky) {
+              return { ...prev, x, y };
+            }
+            return { code, x, y, sticky: false };
+          });
+        });
+        return;
+      }
 
-  /* ------------------------------------------------------------ derived */
-  const selected = selectedCode ? BY_CODE.get(selectedCode) ?? null : null;
-  const selectedTally = selectedCode ? tally.get(selectedCode) : undefined;
-  const selectedMeta = selectedCode ? COUNTRY_META[selectedCode] : undefined;
-  const selectedIsYou = Boolean(selectedCode && yourCountry?.code === selectedCode);
+      if (!active || !gesture.current) return;
+      if (rect) {
+        active.x = event.clientX - rect.left;
+        active.y = event.clientY - rect.top;
+      }
 
-  const hovered = hoverCode ? BY_CODE.get(hoverCode) ?? null : null;
-  const hoveredTally = hoverCode ? tally.get(hoverCode) : undefined;
+      const g = gesture.current;
+      if (pointers.current.size >= 2) {
+        const [a, b] = [...pointers.current.values()];
+        const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+        const midX = (a.x + b.x) / 2;
+        const midY = (a.y + b.y) / 2;
+        const k = clamp(MIN_K, g.startK * (dist / g.dist), MAX_K);
+        const ratio = k / g.startK;
+        view.current.k = k;
+        view.current.x = midX - (g.originX - g.startX) * ratio;
+        view.current.y = midY - (g.originY - g.startY) * ratio;
+        if (k <= MIN_K + 0.001) {
+          view.current.x = 0;
+          view.current.y = 0;
+        }
+        g.moved = Math.max(
+          g.moved,
+          Math.abs(dist - g.dist) + Math.hypot(midX - g.originX, midY - g.originY),
+        );
+        apply(false);
+        return;
+      }
 
-  const zoomed = view.z > 1.02;
-  const transform = `translate(${(CX + view.x).toFixed(2)} ${(CY + view.y).toFixed(
-    2,
-  )}) scale(${view.z.toFixed(4)}) translate(${-CX} ${-CY})`;
-  const hairline = 1 / Math.sqrt(view.z);
+      const dx = active.x - g.originX;
+      const dy = active.y - g.originY;
+      g.moved = Math.max(g.moved, Math.hypot(dx, dy));
+
+      // One finger / one mouse: pan, but only once zoomed in — at fit zoom the
+      // vertical swipe is left to the browser so the page still scrolls freely.
+      if (g.startK <= MIN_K + 0.001) return;
+      view.current.x = g.startX + dx;
+      view.current.y = g.startY + dy;
+      apply(false);
+    },
+    [apply],
+  );
+
+  const endGesture = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const wasTracking = pointers.current.has(event.pointerId);
+      pointers.current.delete(event.pointerId);
+      viewportRef.current?.releasePointerCapture?.(event.pointerId);
+
+      const g = gesture.current;
+      if (pointers.current.size === 0) {
+        gesture.current = null;
+        setPanning(false);
+        if (wasTracking && g) {
+          const quick = performance.now() - g.beganAt < 400;
+          const still = g.moved < 12;
+          const now = performance.now();
+          const doubleTap = now - lastTap.current < 320;
+          lastTap.current = now;
+          if (quick && still && event.pointerType !== "mouse") {
+            const rect = viewportRef.current?.getBoundingClientRect();
+            if (rect) {
+              const px = event.clientX - rect.left;
+              const py = event.clientY - rect.top;
+              if (view.current.k > MIN_K + 0.001 && doubleTap) {
+                fit();
+              } else {
+                // Pointer capture retargets the event, so hit-test the real pixel.
+                const node = document
+                  .elementFromPoint(event.clientX, event.clientY)
+                  ?.closest?.("[data-code]");
+                const code = node?.getAttribute("data-code");
+                if (code) {
+                  setHover({ code, x: px, y: py, sticky: true });
+                  setInteracted(true);
+                } else {
+                  setHover(null);
+                }
+              }
+            }
+          }
+        }
+        commit();
+      } else if (pointers.current.size === 1) {
+        // Pinch ended into a drag: re-anchor so the map does not jump.
+        const [only] = [...pointers.current.values()];
+        gesture.current = {
+          startK: view.current.k,
+          startX: view.current.x,
+          startY: view.current.y,
+          originX: only.x,
+          originY: only.y,
+          dist: 0,
+          moved: g?.moved ?? 0,
+          beganAt: g?.beganAt ?? performance.now(),
+        };
+      }
+    },
+    [commit, fit],
+  );
+
+  /* Auto-dismiss tapped tooltips so the phone view stays clean. */
+  useEffect(() => {
+    if (!hover?.sticky) return;
+    const id = window.setTimeout(() => setHover(null), 3200);
+    return () => window.clearTimeout(id);
+  }, [hover]);
+
+  const info = hover
+    ? { ...buildInfo(hover.code, tally, yourCountry?.code), x: hover.x, y: hover.y }
+    : null;
+  const zoomed = zoomUi > MIN_K + 0.02;
 
   return (
-    <div
-      ref={shellRef}
-      onMouseDown={onMouseDown}
-      onMouseMove={onMouseMove}
-      onMouseUp={endMouse}
-      onMouseLeave={() => {
-        endMouse();
-        setHoverCode(null);
-      }}
-      onClick={clearIfBackground}
-      onDoubleClick={(event) => {
-        if (view.z > 1.6) resetView();
-        else zoomAt(2.8, event.clientX, event.clientY, true);
-      }}
-      className="map-shell relative aspect-[5/4] w-full xs:aspect-[3/2] sm:aspect-[16/9] lg:aspect-[2/1]"
-      style={{
-        cursor: zoomed ? (grabbing ? "grabbing" : "grab") : "default",
-        touchAction: zoomed ? "none" : "pan-y",
-      }}
-    >
+    <div className="map-shell">
       <div
-        className="pointer-events-none absolute inset-0 z-0 opacity-70"
-        style={{
-          background: "radial-gradient(70% 60% at 50% 10%, rgba(90,120,190,0.16), transparent 70%)",
+        ref={viewportRef}
+        className="map-viewport"
+        data-panning={panning ? "true" : "false"}
+        style={{ touchAction: zoomed ? "none" : "pan-y" }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endGesture}
+        onPointerCancel={endGesture}
+        onPointerLeave={(event) => {
+          if (event.pointerType === "mouse" && !panning) setHover(null);
         }}
-      />
-
-      <svg
-        className="map-svg absolute inset-0 h-full w-full"
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="xMidYMid meet"
-        role="img"
-        aria-label="World map showing where Aston Machan is being remembered. Pinch or scroll to zoom, drag to pan."
       >
-        <defs>
-          <linearGradient id="youGlow" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#fff3d6" />
-            <stop offset="100%" stopColor="#f4cd86" />
-          </linearGradient>
-          <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
-            <feGaussianBlur stdDeviation="6" result="b" />
-            <feMerge>
-              <feMergeNode in="b" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
-
-        <g
-          transform={transform}
+        <div
+          className="pointer-events-none absolute inset-0 opacity-70"
           style={{
-            transition: smooth ? "transform 0.43s cubic-bezier(0.22, 1, 0.36, 1)" : "none",
+            background:
+              "radial-gradient(70% 60% at 50% 12%, rgba(90,120,190,0.16), transparent 70%)",
           }}
-        >
-          <path d={worldMap.sphere} fill="none" stroke="rgba(150,175,225,0.14)" strokeWidth={0.8 * hairline} />
-          <path
-            d={worldMap.graticule}
-            fill="none"
-            stroke="rgba(140,165,215,0.08)"
-            strokeWidth={0.5 * hairline}
-          />
+        />
 
-          {GEOMETRY.map((country) => {
-            const entry = tally.get(country.code);
-            const fill = glow(entry?.count ?? 0, maxCount);
-            const isYou = yourCountry?.code === country.code;
-            const isSelected = selectedCode === country.code;
-            const alive = (entry?.today ?? 0) > 0;
+        <div ref={layerRef} className="map-layer">
+          <svg
+            className="map-svg"
+            viewBox={`0 0 ${VBW} ${VBH}`}
+            role="img"
+            aria-label="World map. Brighter countries have more people remembering Aston Machan. Pinch or use the controls to zoom."
+          >
+            <defs>
+              <linearGradient id="ocean" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#0a1024" />
+                <stop offset="52%" stopColor="#070b18" />
+                <stop offset="100%" stopColor="#04060e" />
+              </linearGradient>
+              <linearGradient id="youGlow" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#fff3d6" />
+                <stop offset="100%" stopColor="#f4cd86" />
+              </linearGradient>
+              <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
+                <feGaussianBlur stdDeviation="6" result="b" />
+                <feMerge>
+                  <feMergeNode in="b" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
 
-            return (
-              <path
-                key={country.code}
-                d={country.d}
-                data-country={country.code}
-                className={[
-                  "country",
-                  fill ? "country-lit" : "country-dim",
-                  isYou ? "country-active" : "",
-                  alive && awake ? "breathe" : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-                fill={fill ?? undefined}
-                strokeWidth={(isSelected ? 1.6 : isYou ? 1 : 0.5) * hairline}
-                stroke={isSelected ? "#ffe6b0" : undefined}
-                style={{
-                  filter: isSelected ? "drop-shadow(0 0 7px rgba(255,230,160,0.9))" : undefined,
-                }}
-                onMouseEnter={() => setHoverCode(country.code)}
-                onClick={() => pickCountry(country.code)}
-              />
-            );
-          })}
+            <rect x="0" y="0" width={VBW} height={VBH} fill="url(#ocean)" />
+            <path d={worldMap.sphere} fill="none" stroke="rgba(150,175,225,0.13)" strokeWidth="0.8" />
+            <path
+              d={worldMap.graticule}
+              fill="none"
+              stroke="rgba(140,165,215,0.075)"
+              strokeWidth="0.5"
+            />
 
-          <g pointerEvents="none">
-            {pings.map((ping) => (
-              <g key={`ping-${ping.code}`}>
+            <CountryPaths
+              tally={tally}
+              maxCount={maxCount}
+              youCode={yourCountry?.code ?? null}
+              awake={awake}
+            />
+
+            <g pointerEvents="none">
+              {pings.map((ping) => (
+                <g key={`ping-${ping.code}`}>
+                  <circle
+                    className="ping"
+                    cx={ping.cx}
+                    cy={ping.cy}
+                    r={2}
+                    fill="none"
+                    stroke="rgba(244,205,134,0.85)"
+                    style={{ animationDelay: `${ping.delay}s` }}
+                  />
+                  <circle cx={ping.cx} cy={ping.cy} r={1.5} fill="rgba(255,232,180,0.9)" />
+                </g>
+              ))}
+            </g>
+
+            {you ? (
+              <g pointerEvents="none">
+                <circle cx={you.cx} cy={you.cy} r={11} fill="rgba(255,226,160,0.1)" />
                 <circle
                   className="ping"
-                  cx={ping.cx}
-                  cy={ping.cy}
-                  r={2}
+                  cx={you.cx}
+                  cy={you.cy}
+                  r={3}
                   fill="none"
-                  stroke="rgba(244,205,134,0.85)"
-                  style={{ animationDelay: `${ping.delay}s` }}
+                  stroke="rgba(255,236,195,0.95)"
                 />
-                <circle cx={ping.cx} cy={ping.cy} r={1.5} fill="rgba(255,232,180,0.9)" />
+                <circle
+                  className="marker-dot"
+                  cx={you.cx}
+                  cy={you.cy}
+                  r={3.4}
+                  fill="url(#youGlow)"
+                  filter="url(#soft)"
+                />
+                <line
+                  className="map-label"
+                  x1={you.cx}
+                  y1={you.cy}
+                  x2={you.cx + 16}
+                  y2={you.cy - 14}
+                  stroke="rgba(255,236,195,0.5)"
+                  strokeWidth="0.6"
+                />
+                <text
+                  className="map-label"
+                  x={you.cx + 20}
+                  y={you.cy - 16}
+                  fill="#ffeecb"
+                  fontSize="10"
+                  letterSpacing="2.4"
+                  style={{ textTransform: "uppercase" }}
+                >
+                  {(yourCountry?.name ?? "").toUpperCase()}
+                </text>
               </g>
-            ))}
-          </g>
+            ) : null}
+          </svg>
+        </div>
 
-          {you ? (
-            <g pointerEvents="none">
-              <circle cx={you.cx} cy={you.cy} r={11 * hairline} fill="rgba(255,226,160,0.1)" />
-              <circle
-                className="ping"
-                cx={you.cx}
-                cy={you.cy}
-                r={3}
-                fill="none"
-                stroke="rgba(255,236,195,0.95)"
-              />
-              <circle
-                className="marker-dot"
-                cx={you.cx}
-                cy={you.cy}
-                r={3.4 * hairline}
-                fill="url(#youGlow)"
-                filter="url(#soft)"
-              />
-              <text
-                className="map-label"
-                x={you.cx}
-                y={you.cy - 7 * hairline}
-                textAnchor="middle"
-                fill="#ffeecb"
-                fontSize={10 * hairline}
-                letterSpacing={1.6 * hairline}
-              >
-                {(yourCountry?.name ?? "").toUpperCase()}
-              </text>
-            </g>
-          ) : null}
-        </g>
-      </svg>
-
-      {/* ------------------------------------------------------- controls */}
-      <div className="absolute top-2.5 right-2.5 z-20 flex flex-col gap-1 rounded-2xl border border-white/10 bg-[#080b16]/85 p-1 shadow-xl backdrop-blur sm:top-3.5 sm:right-3.5">
-        <MapButton label="Zoom in" onClick={() => zoomByButton(1.6)} disabled={view.z >= MAX_Z}>
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 5v14M5 12h14" />
-        </MapButton>
-        <MapButton label="Zoom out" onClick={() => zoomByButton(0.625)} disabled={view.z <= MIN_Z}>
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M5 12h14" />
-        </MapButton>
-        {yourCountry && BY_CODE.has(yourCountry.code) ? (
-          <MapButton
-            label={`Find ${yourCountry.name}`}
-            tone="gold"
-            onClick={() => {
-              focusCountry(yourCountry.code);
-              setSelectedCode(yourCountry.code);
+        {info ? (
+          <div
+            className="map-tip"
+            style={{
+              left: clamp(84, info.x, Math.max(88, vpSize.w - 84)),
+              top: Math.max(58, info.y),
             }}
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={1.9}
-              d="M12 21s7-6.2 7-11a7 7 0 10-14 0c0 4.8 7 11 7 11z"
-            />
-            <circle cx="12" cy="10" r="2.4" strokeWidth={1.9} />
-          </MapButton>
-        ) : null}
-        {zoomed ? (
-          <MapButton label="Reset the view" onClick={resetView}>
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 9a8 8 0 0113.9-3.4M20 15A8 8 0 016.1 18.4M4 5v4h4m12 10v-4h-4"
-            />
-          </MapButton>
-        ) : null}
-      </div>
-
-      {/* --------------------------------------------------- zoom + hints */}
-      <div className="pointer-events-none absolute top-2.5 left-2.5 z-10 flex items-center gap-2 sm:top-3.5 sm:left-3.5">
-        <span className="mono rounded-lg border border-white/10 bg-[#080b16]/85 px-2 py-1 text-[10px] text-gold backdrop-blur">
-          {view.z.toFixed(1)}×
-        </span>
-        {!zoomed ? (
-          <span className="rounded-lg bg-[#080b16]/70 px-2 py-1 text-[10px] text-mist/75 backdrop-blur">
-            {touchUsed ? "Pinch to zoom · drag to pan" : "Tap a country · ⌘/ctrl + scroll to zoom"}
-          </span>
-        ) : null}
-      </div>
-
-      {/* -------------------------------------------- selected country card */}
-      {selected ? (
-        <div className="animate-fade-up absolute right-2.5 bottom-2.5 left-2.5 z-30 rounded-2xl border border-white/15 bg-[#080b16]/95 p-3.5 shadow-2xl backdrop-blur sm:right-auto sm:bottom-3.5 sm:left-3.5 sm:w-[19rem]">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <span className="text-2xl leading-none">{selectedMeta?.emoji ?? "🌍"}</span>
-              <div className="min-w-0">
-                <div className="truncate font-display text-base leading-tight text-ink">
-                  {selected.name}
-                </div>
-                <div className="mt-0.5 text-[10px] uppercase tracking-[0.2em] text-mist/70">
-                  {selectedMeta?.region || selected.region || "Earth"}
-                </div>
-              </div>
+            <div className="font-medium tracking-wide text-[#f6f4ff]">{info.title}</div>
+            <div className="mt-0.5 text-[11px] text-mist">
+              {info.count > 0 ? (
+                <>
+                  <span className="text-gold mono">{info.count.toLocaleString()}</span>{" "}
+                  remembrance{info.count === 1 ? "" : "s"}
+                  {info.today > 0 ? <span className="text-tide"> · {info.today} today</span> : null}
+                </>
+              ) : (
+                <span className="text-mist/70">Not remembered here yet</span>
+              )}
             </div>
-            <button
-              type="button"
-              onClick={() => setSelectedCode(null)}
-              aria-label="Close"
-              className="-mt-1 -mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-mist/60 transition hover:bg-white/5 hover:text-ink"
-            >
-              ✕
-            </button>
-          </div>
-
-          <div className="mt-2.5 flex items-center justify-between border-t border-white/10 pt-2.5 text-xs text-mist">
-            {selectedTally ? (
-              <span>
-                <strong className="mono text-gold">{selectedTally.count.toLocaleString()}</strong>{" "}
-                remembrance{selectedTally.count === 1 ? "" : "s"}
-                {selectedTally.today > 0 ? (
-                  <span className="text-tide"> · {selectedTally.today} today</span>
-                ) : null}
-              </span>
-            ) : (
-              <span className="text-mist/70">No one has remembered her here yet</span>
-            )}
-            {selectedIsYou ? (
-              <span className="shrink-0 text-[10px] uppercase tracking-[0.2em] text-gold">
-                ✦ you
-              </span>
+            {info.isYou ? (
+              <div className="mt-1 text-[10px] uppercase tracking-[0.25em] text-gold">
+                you are here
+              </div>
             ) : null}
           </div>
+        ) : null}
 
-          {onSelectCountry && !selectedIsYou ? (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                onSelectCountry(selected.code);
-                setSelectedCode(null);
-              }}
-              className="mt-3 w-full rounded-xl border border-gold/40 bg-gold/15 py-2 text-xs font-medium tracking-wide text-gold-bright transition hover:bg-gold/25 active:scale-[0.98] disabled:opacity-60"
-            >
-              {busy
-                ? "Moving your light…"
-                : awake
-                  ? "I'm remembering from here"
-                  : "Remember from here"}
-            </button>
-          ) : null}
+        <div className="map-controls" onPointerDown={(event) => event.stopPropagation()}>
+          <button
+            type="button"
+            className="map-ctrl"
+            aria-label="Zoom in on the map"
+            onClick={() => zoomAbout(1.7, size.current.w / 2, size.current.h / 2)}
+          >
+            <IconPlus />
+          </button>
+          <button
+            type="button"
+            className="map-ctrl"
+            aria-label="Zoom out on the map"
+            onClick={() => zoomAbout(1 / 1.7, size.current.w / 2, size.current.h / 2)}
+          >
+            <IconMinus />
+          </button>
+          <button
+            type="button"
+            className="map-ctrl"
+            aria-label="Centre the map on the country you remember from"
+            disabled={!you}
+            onClick={centerOnMe}
+          >
+            <IconTarget />
+          </button>
+          <button
+            type="button"
+            className="map-ctrl"
+            aria-label="Fit the whole world"
+            disabled={!zoomed}
+            onClick={fit}
+          >
+            <IconFit />
+          </button>
         </div>
-      ) : null}
 
-      {/* -------------------------------------------- desktop hover readout */}
-      {!selected && hovered ? (
-        <div className="pointer-events-none absolute bottom-3.5 left-3.5 z-20 hidden rounded-xl border border-white/10 bg-[#080b16]/90 px-3 py-1.5 text-xs backdrop-blur sm:block">
-          <span className="text-ink/90">
-            {COUNTRY_META[hovered.code]?.emoji ?? "🌍"} {hovered.name}
+        <div className="map-zoom-badge" data-visible={zoomed ? "true" : "false"}>
+          <span className="mono">{zoomUi.toFixed(1)}×</span>
+          <span className="hidden sm:inline"> · drag to pan</span>
+        </div>
+
+        <div className="pointer-events-none absolute bottom-4 left-5 hidden items-center gap-3 text-[10px] uppercase tracking-[0.28em] text-mist/70 sm:flex">
+          <span>dim</span>
+          <span
+            className="h-1.5 w-24 rounded-full"
+            style={{
+              background:
+                "linear-gradient(90deg, rgba(148,163,197,0.2), rgba(244,205,134,0.45), rgba(255,232,170,0.95))",
+            }}
+          />
+          <span>bright</span>
+        </div>
+
+        <div className="pointer-events-none absolute right-5 bottom-4 hidden text-right text-[10px] uppercase tracking-[0.28em] text-mist/70 sm:block">
+          <div>
+            <span className="text-gold mono">{stats.countries.length}</span> countries remembering
+          </div>
+          <div className="mt-1">
+            <span className="text-gold mono">{stats.total.toLocaleString()}</span> remembrances all
+            time
+          </div>
+        </div>
+
+        <p className="map-hint" data-visible={!interacted ? "true" : "false"}>
+          <span className="sm:hidden">Pinch, or use +, to look closer · tap a country</span>
+          <span className="hidden sm:inline">
+            Hold ⌘ / Ctrl and scroll to zoom · tap a country for detail
           </span>
-          <span className="mono ml-2 text-gold">
-            {(hoveredTally?.count ?? 0).toLocaleString()}
-          </span>
-        </div>
-      ) : null}
-
-      {/* ------------------------------------------------------- footnotes */}
-      <div className="pointer-events-none absolute right-3.5 bottom-3.5 z-10 hidden text-right text-[10px] uppercase tracking-[0.24em] text-mist/60 lg:block">
-        <div>
-          <span className="mono text-gold">{stats.countries.length}</span> countries lit
-        </div>
-        <div className="mt-1">
-          <span className="mono text-gold">{stats.total.toLocaleString()}</span> remembrances
-        </div>
+        </p>
       </div>
     </div>
   );
 }
 
-function MapButton({
-  label,
-  onClick,
-  children,
-  disabled,
-  tone = "plain",
-}: {
-  label: string;
-  onClick: () => void;
-  children: React.ReactNode;
-  disabled?: boolean;
-  tone?: "plain" | "gold";
-}) {
+function buildInfo(code: string, tally: Tally, yourCode?: string) {
+  const geo = GEOMETRY_BY_CODE.get(code);
+  const entry = tally.get(code);
+  const name = geo?.name ?? code;
+  return {
+    title: entry?.emoji ? `${entry.emoji} ${name}` : name,
+    count: entry?.count ?? 0,
+    today: entry?.today ?? 0,
+    isYou: code === yourCode,
+  };
+}
+
+/* -------------------------------------------------------------- tiny icons */
+const iconProps = {
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 1.7,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+  "aria-hidden": true,
+};
+
+function IconPlus() {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      title={label}
-      className={`flex h-10 w-10 touch-manipulation items-center justify-center rounded-xl transition active:scale-90 disabled:opacity-30 sm:h-9 sm:w-9 ${
-        tone === "gold" ? "text-gold hover:bg-gold/15" : "text-ink/85 hover:bg-white/10 hover:text-gold"
-      }`}
-    >
-      <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        {children}
-      </svg>
-    </button>
+    <svg className="h-4 w-4" {...iconProps}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function IconMinus() {
+  return (
+    <svg className="h-4 w-4" {...iconProps}>
+      <path d="M5 12h14" />
+    </svg>
+  );
+}
+
+function IconTarget() {
+  return (
+    <svg className="h-4 w-4" {...iconProps}>
+      <circle cx="12" cy="12" r="7" />
+      <circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none" />
+      <path d="M12 1.8v3M12 19.2v3M1.8 12h3M19.2 12h3" />
+    </svg>
+  );
+}
+
+function IconFit() {
+  return (
+    <svg className="h-4 w-4" {...iconProps}>
+      <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+    </svg>
   );
 }
