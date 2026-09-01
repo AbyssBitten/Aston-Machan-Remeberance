@@ -226,8 +226,6 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
                 stats={stats}
                 yourCountry={yourCountry}
                 awake={remembered}
-                busy={pending}
-                onSelectCountry={(code) => void remember(code)}
               />
             </div>
 
@@ -333,8 +331,8 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
               ) : null}
 
               <p className="max-w-md text-[11px] leading-relaxed text-mist/60">
-                Somewhere else? Tap your country on the map, or use the list below — the record
-                taken from your IP is deleted and replaced, never added to.
+                Somewhere else? Use the list below to correct your country — the record taken
+                from your IP is deleted and replaced, never added to.
               </p>
 
               <div className="flex flex-wrap items-center justify-center gap-3">
