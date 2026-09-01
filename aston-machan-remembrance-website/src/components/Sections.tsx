@@ -100,6 +100,12 @@ export function PrivacyNote() {
               day-marker keeps your browser from counting twice on the same day.
             </span>
           </li>
+          <li className="flex gap-3">
+            <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-tide/80" />
+            <span>
+              <strong className="text-ink/90">Location correction:</strong> If your IP was inaccurate (e.g. VPN or network routing), you can tap any country or use &ldquo;Correct my country&rdquo; at any time. The previous record from your IP is deleted, and your chosen country is saved in its place.
+            </span>
+          </li>
         </ul>
       </div>
     </section>
