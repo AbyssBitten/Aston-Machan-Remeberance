@@ -95,10 +95,14 @@ export default function WorldMap({
   stats,
   yourCountry,
   awake,
+  busy = false,
+  onSelectCountry,
 }: {
   stats: StatsPayload;
   yourCountry: DescribedCountry | null;
   awake: boolean;
+  busy?: boolean;
+  onSelectCountry?: (code: string) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const layerRef = useRef<HTMLDivElement | null>(null);
@@ -115,7 +119,6 @@ export default function WorldMap({
     moved: number;
     beganAt: number;
   } | null>(null);
-  const lastTap = useRef(0);
   const rafPending = useRef(false);
 
   const [zoomUi, setZoomUi] = useState(1);
@@ -217,7 +220,6 @@ export default function WorldMap({
     (cx: number, cy: number, bw: number, bh: number) => {
       const { w, h } = measure();
       if (!w || !h) return;
-      // viewBox -> viewport pixels
       const sx = w / VBW;
       const sy = h / VBH;
       const k = clamp(1.4, Math.min(w / (bw * sx * 1.9), h / (bh * sy * 2.4)), 5.5);
@@ -261,10 +263,9 @@ export default function WorldMap({
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
-    // Native listener so we can preventDefault (React registers wheel passive).
     const onWheel = (event: WheelEvent) => {
       const wantsZoom = event.ctrlKey || event.metaKey;
-      if (!wantsZoom) return; // leave plain scrolling to the page
+      if (!wantsZoom) return;
       event.preventDefault();
       const rect = el.getBoundingClientRect();
       zoomAbout(
@@ -335,8 +336,7 @@ export default function WorldMap({
       const active = pointers.current.get(event.pointerId);
       const rect = viewportRef.current?.getBoundingClientRect();
 
-      /* Mouse hover tooltip — routed through a single delegated hit-test, so the
-         177 paths need no listeners of their own. */
+      /* Mouse hover tooltip */
       if (!active && event.pointerType === "mouse" && !gesture.current && rect) {
         const target = event.target as Element | null;
         const node = target?.closest?.("[data-code]") as Element | null;
@@ -391,8 +391,6 @@ export default function WorldMap({
       const dy = active.y - g.originY;
       g.moved = Math.max(g.moved, Math.hypot(dx, dy));
 
-      // One finger / one mouse: pan, but only once zoomed in — at fit zoom the
-      // vertical swipe is left to the browser so the page still scrolls freely.
       if (g.startK <= MIN_K + 0.001) return;
       view.current.x = g.startX + dx;
       view.current.y = g.startY + dy;
@@ -401,7 +399,7 @@ export default function WorldMap({
     [apply],
   );
 
-const endGesture = useCallback(
+  const endGesture = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       const wasTracking = pointers.current.has(event.pointerId);
       pointers.current.delete(event.pointerId);
@@ -412,25 +410,27 @@ const endGesture = useCallback(
         gesture.current = null;
         setPanning(false);
         if (wasTracking && g) {
-          const quick = performance.now() - g.beganAt < 400;
+          const quick = performance.now() - g.beganAt < 450;
           const still = g.moved < 12;
 
-          // Single tap on mobile selects the country without resetting zoom
-          if (quick && still && event.pointerType !== "mouse") {
+          if (quick && still) {
             const rect = viewportRef.current?.getBoundingClientRect();
             if (rect) {
               const px = event.clientX - rect.left;
               const py = event.clientY - rect.top;
               
-              // Pointer capture retargets the event, so hit-test the real pixel.
               const node = document
                 .elementFromPoint(event.clientX, event.clientY)
                 ?.closest?.("[data-code]");
               const code = node?.getAttribute("data-code");
+              
               if (code) {
                 setHover({ code, x: px, y: py, sticky: true });
                 setInteracted(true);
-              } else {
+                if (!busy) {
+                  onSelectCountry?.(code);
+                }
+              } else if (event.pointerType !== "mouse") {
                 setHover(null);
               }
             }
@@ -438,7 +438,6 @@ const endGesture = useCallback(
         }
         commit();
       } else if (pointers.current.size === 1) {
-        // Pinch ended into a drag: re-anchor so the map does not jump.
         const [only] = [...pointers.current.values()];
         gesture.current = {
           startK: view.current.k,
@@ -452,10 +451,10 @@ const endGesture = useCallback(
         };
       }
     },
-    [commit],
+    [busy, commit, onSelectCountry],
   );
 
-  /* Auto-dismiss tapped tooltips so the phone view stays clean. */
+  /* Auto-dismiss tapped tooltips */
   useEffect(() => {
     if (!hover?.sticky) return;
     const id = window.setTimeout(() => setHover(null), 3200);
@@ -646,6 +645,14 @@ const endGesture = useCallback(
             onClick={centerOnMe}
           >
             <IconTarget />
+          </button>
+          <button
+            type="button"
+            className="map-ctrl"
+            aria-label="Reset map view"
+            onClick={fit}
+          >
+            <IconFit />
           </button>
         </div>
 
