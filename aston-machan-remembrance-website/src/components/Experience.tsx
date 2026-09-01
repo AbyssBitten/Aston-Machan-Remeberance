@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Crown, Ribbon } from "@/components/Emblems";
 import MemoryLedger from "@/components/MemoryLedger";
 import StatsGrid from "@/components/StatsGrid";
@@ -10,15 +10,18 @@ import type { StatsPayload } from "@/lib/stats";
 
 const DAY_KEY = "machan:day";
 const COUNTRY_KEY = "machan:country";
+const ID_KEY = "machan:remembranceId";
 
 const QUESTION = "Do you remember Machan?";
 
 type RememberResponse = {
   counted: boolean;
+  updated?: boolean;
   rememberedToday: boolean;
   needsCountry: boolean;
   country: DescribedCountry;
   source: "edge" | "ip" | "unknown" | "manual";
+  remembranceId?: number | null;
   stats: StatsPayload;
 };
 
@@ -53,10 +56,12 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
   const [stats, setStats] = useState<StatsPayload>(initialStats);
   const [remembered, setRemembered] = useState(false);
   const [yourCountry, setYourCountry] = useState<DescribedCountry | null>(null);
+  const [remembranceId, setRemembranceId] = useState<number | null>(null);
+  const remembranceIdRef = useRef<number | null>(null);
+
   const [pending, setPending] = useState(false);
   const [questionUp, setQuestionUp] = useState(false);
   const [overlayGone, setOverlayGone] = useState(false);
-  const [needsCountry, setNeedsCountry] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [shareNote, setShareNote] = useState<string | null>(null);
@@ -67,6 +72,13 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
     const today = new Date().toISOString().slice(0, 10);
     const day = window.localStorage.getItem(DAY_KEY);
     const code = window.localStorage.getItem(COUNTRY_KEY);
+    const savedId = Number(window.localStorage.getItem(ID_KEY)) || null;
+
+    if (savedId) {
+      setRemembranceId(savedId);
+      remembranceIdRef.current = savedId;
+    }
+
     if (day === today && code) {
       const restored = describeCountry(code);
       if (restored.code !== "ZZ") {
@@ -75,6 +87,7 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
         setOverlayGone(true);
       }
     }
+
     setNow(Date.now());
     const id = window.setTimeout(() => setQuestionUp(true), 1100);
     return () => window.clearTimeout(id);
@@ -119,24 +132,40 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
     setPending(true);
     setNotice(null);
     try {
+      const currentPreviousId = remembranceIdRef.current;
       const response = await fetch("/api/remember", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ countryCode }),
+        body: JSON.stringify({
+          countryCode,
+          previousId: currentPreviousId,
+        }),
       });
       if (!response.ok) throw new Error("network");
       const data = (await response.json()) as RememberResponse;
 
       setStats(data.stats);
-      setYourCountry(data.country.code === "ZZ" ? null : data.country);
-      setNeedsCountry(false);
+
+      if (data.remembranceId) {
+        setRemembranceId(data.remembranceId);
+        remembranceIdRef.current = data.remembranceId;
+        window.localStorage.setItem(ID_KEY, String(data.remembranceId));
+      }
+
+      if (data.country.code !== "ZZ") {
+        setYourCountry(data.country);
+        window.localStorage.setItem(COUNTRY_KEY, data.country.code);
+      }
 
       if (data.counted || data.rememberedToday) {
         setRemembered(true);
         setPickerOpen(false);
         window.localStorage.setItem(DAY_KEY, new Date().toISOString().slice(0, 10));
-        if (data.country.code !== "ZZ") {
-          window.localStorage.setItem(COUNTRY_KEY, data.country.code);
+
+        if (data.updated) {
+          setNotice(
+            `Updated to ${data.country.emoji} ${data.country.name} — your previous record was replaced.`,
+          );
         }
       } else if (data.needsCountry) {
         setPickerOpen(true);
@@ -191,7 +220,6 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
       </header>
 
       <main className="pb-10">
-        {/* ------------------------------------------------------- the stage */}
         {overlayGone ? (
           <h1 className="sr-only">
             Do you remember Machan? — Aston Machan Remembrance
@@ -208,7 +236,12 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
                 transform: remembered ? "none" : "scale(0.985)",
               }}
             >
-              <WorldMap stats={stats} yourCountry={yourCountry} awake={remembered} />
+              <WorldMap
+                stats={stats}
+                yourCountry={yourCountry}
+                awake={remembered}
+                onSelectCountry={(code) => void remember(code)}
+              />
             </div>
 
             {!overlayGone ? (
@@ -305,6 +338,13 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
                   <>Your remembrance was counted, though we could not place it on the map.</>
                 )}
               </p>
+
+              {notice ? (
+                <div className="animate-fade-up rounded-xl border border-gold/30 bg-gold/10 px-4 py-2 text-xs text-gold-bright shadow-lg">
+                  {notice}
+                </div>
+              ) : null}
+
               <div className="flex flex-wrap items-center justify-center gap-3">
                 <button
                   type="button"
@@ -316,13 +356,21 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
                 <button
                   type="button"
                   onClick={() => setPickerOpen((open) => !open)}
-                  className="rounded-full border border-white/10 bg-white/[0.04] px-5 py-2 text-[10px] uppercase tracking-[0.28em] text-mist transition hover:border-gold/40 hover:text-ink"
+                  className="rounded-full border border-gold/30 bg-gold/5 px-5 py-2 text-[10px] uppercase tracking-[0.28em] text-gold transition hover:border-gold hover:bg-gold/15"
                 >
-                  Correct my country
+                  {pickerOpen ? "Close country list" : "Correct my country"}
                 </button>
                 {shareNote ? <span className="text-[11px] text-tide">{shareNote}</span> : null}
               </div>
-              {pickerOpen ? <CountryPicker onPick={(code) => void remember(code)} /> : null}
+
+              {pickerOpen ? (
+                <div className="w-full max-w-md">
+                  <p className="text-xs text-mist/70 mb-2">
+                    Select where you are really remembering from. The previous location record will be deleted and replaced.
+                  </p>
+                  <CountryPicker onPick={(code) => void remember(code)} />
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -368,7 +416,7 @@ function CountryPicker({ onPick }: { onPick: (code: string) => void }) {
     .slice(0, 60);
 
   return (
-    <div className="card animate-fade-up mt-4 w-full max-w-md p-4 text-left">
+    <div className="card animate-fade-up mt-2 w-full max-w-md p-4 text-left">
       <input
         value={query}
         onChange={(event) => setQuery(event.target.value)}
@@ -381,7 +429,7 @@ function CountryPicker({ onPick }: { onPick: (code: string) => void }) {
             key={country.code}
             type="button"
             onClick={() => onPick(country.code)}
-            className="truncate rounded-md px-2 py-1.5 text-left text-xs text-mist transition hover:bg-white/5 hover:text-ink"
+            className="truncate rounded-md px-2 py-1.5 text-left text-xs text-mist transition hover:bg-white/5 hover:text-ink hover:text-gold"
           >
             {country.emoji} {country.name}
           </button>
