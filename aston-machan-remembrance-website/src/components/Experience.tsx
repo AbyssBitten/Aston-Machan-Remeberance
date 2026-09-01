@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Crown, Ribbon } from "@/components/Emblems";
 import MemoryLedger from "@/components/MemoryLedger";
 import StatsGrid from "@/components/StatsGrid";
@@ -10,7 +10,6 @@ import type { StatsPayload } from "@/lib/stats";
 
 const DAY_KEY = "machan:day";
 const COUNTRY_KEY = "machan:country";
-const ID_KEY = "machan:remembranceId";
 
 const QUESTION = "Do you remember Machan?";
 
@@ -56,9 +55,6 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
   const [stats, setStats] = useState<StatsPayload>(initialStats);
   const [remembered, setRemembered] = useState(false);
   const [yourCountry, setYourCountry] = useState<DescribedCountry | null>(null);
-  const [remembranceId, setRemembranceId] = useState<number | null>(null);
-  const remembranceIdRef = useRef<number | null>(null);
-
   const [pending, setPending] = useState(false);
   const [questionUp, setQuestionUp] = useState(false);
   const [overlayGone, setOverlayGone] = useState(false);
@@ -72,13 +68,6 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
     const today = new Date().toISOString().slice(0, 10);
     const day = window.localStorage.getItem(DAY_KEY);
     const code = window.localStorage.getItem(COUNTRY_KEY);
-    const savedId = Number(window.localStorage.getItem(ID_KEY)) || null;
-
-    if (savedId) {
-      setRemembranceId(savedId);
-      remembranceIdRef.current = savedId;
-    }
-
     if (day === today && code) {
       const restored = describeCountry(code);
       if (restored.code !== "ZZ") {
@@ -132,25 +121,20 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
     setPending(true);
     setNotice(null);
     try {
-      const currentPreviousId = remembranceIdRef.current;
+      /**
+       * Only the country travels with the request. The id of your own record
+       * lives in an httpOnly cookie the browser sends for you — that way no
+       * crafted payload can ever delete somebody else's remembrance.
+       */
       const response = await fetch("/api/remember", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          countryCode,
-          previousId: currentPreviousId,
-        }),
+        body: JSON.stringify(countryCode ? { countryCode } : {}),
       });
       if (!response.ok) throw new Error("network");
       const data = (await response.json()) as RememberResponse;
 
       setStats(data.stats);
-
-      if (data.remembranceId) {
-        setRemembranceId(data.remembranceId);
-        remembranceIdRef.current = data.remembranceId;
-        window.localStorage.setItem(ID_KEY, String(data.remembranceId));
-      }
 
       if (data.country.code !== "ZZ") {
         setYourCountry(data.country);
@@ -164,8 +148,10 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
 
         if (data.updated) {
           setNotice(
-            `Updated to ${data.country.emoji} ${data.country.name} — your previous record was replaced.`,
+            `Moved to ${data.country.emoji} ${data.country.name}. Your earlier record was deleted and replaced — you are still counted once.`,
           );
+        } else if (countryCode) {
+          setNotice(`${data.country.emoji} ${data.country.name} is where she sees you from now.`);
         }
       } else if (data.needsCountry) {
         setPickerOpen(true);
@@ -240,6 +226,7 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
                 stats={stats}
                 yourCountry={yourCountry}
                 awake={remembered}
+                busy={pending}
                 onSelectCountry={(code) => void remember(code)}
               />
             </div>
@@ -340,10 +327,15 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
               </p>
 
               {notice ? (
-                <div className="animate-fade-up rounded-xl border border-gold/30 bg-gold/10 px-4 py-2 text-xs text-gold-bright shadow-lg">
+                <div className="animate-fade-up max-w-md rounded-xl border border-gold/30 bg-gold/10 px-4 py-2.5 text-xs leading-relaxed text-gold-bright shadow-lg">
                   {notice}
                 </div>
               ) : null}
+
+              <p className="max-w-md text-[11px] leading-relaxed text-mist/60">
+                Somewhere else? Tap your country on the map, or use the list below — the record
+                taken from your IP is deleted and replaced, never added to.
+              </p>
 
               <div className="flex flex-wrap items-center justify-center gap-3">
                 <button
@@ -365,10 +357,7 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
 
               {pickerOpen ? (
                 <div className="w-full max-w-md">
-                  <p className="text-xs text-mist/70 mb-2">
-                    Select where you are really remembering from. The previous location record will be deleted and replaced.
-                  </p>
-                  <CountryPicker onPick={(code) => void remember(code)} />
+                  <CountryPicker onPick={(code) => void remember(code)} busy={pending} />
                 </div>
               ) : null}
             </div>
@@ -390,7 +379,13 @@ export default function Experience({ initialStats }: { initialStats: StatsPayloa
   );
 }
 
-function CountryPicker({ onPick }: { onPick: (code: string) => void }) {
+function CountryPicker({
+  onPick,
+  busy = false,
+}: {
+  onPick: (code: string) => void;
+  busy?: boolean;
+}) {
   const [countries, setCountries] = useState<{ code: string; name: string; emoji: string }[]>([]);
   const [query, setQuery] = useState("");
 
@@ -423,13 +418,14 @@ function CountryPicker({ onPick }: { onPick: (code: string) => void }) {
         placeholder="Search your country…"
         className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-ink outline-none placeholder:text-mist/50 focus:border-gold/40"
       />
-      <div className="mt-3 grid max-h-56 grid-cols-2 gap-1 overflow-y-auto pr-1">
+      <div className="mt-3 grid max-h-56 grid-cols-2 gap-1 overflow-y-auto overscroll-contain pr-1">
         {filtered.map((country) => (
           <button
             key={country.code}
             type="button"
+            disabled={busy}
             onClick={() => onPick(country.code)}
-            className="truncate rounded-md px-2 py-1.5 text-left text-xs text-mist transition hover:bg-white/5 hover:text-ink hover:text-gold"
+            className="truncate rounded-md px-2 py-2 text-left text-xs text-mist transition hover:bg-white/5 hover:text-gold disabled:opacity-50 sm:py-1.5"
           >
             {country.emoji} {country.name}
           </button>
