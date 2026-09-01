@@ -401,7 +401,7 @@ export default function WorldMap({
     [apply],
   );
 
-  const endGesture = useCallback(
+const endGesture = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       const wasTracking = pointers.current.has(event.pointerId);
       pointers.current.delete(event.pointerId);
@@ -414,28 +414,24 @@ export default function WorldMap({
         if (wasTracking && g) {
           const quick = performance.now() - g.beganAt < 400;
           const still = g.moved < 12;
-          const now = performance.now();
-          const doubleTap = now - lastTap.current < 320;
-          lastTap.current = now;
+
+          // Single tap on mobile selects the country without resetting zoom
           if (quick && still && event.pointerType !== "mouse") {
             const rect = viewportRef.current?.getBoundingClientRect();
             if (rect) {
               const px = event.clientX - rect.left;
               const py = event.clientY - rect.top;
-              if (view.current.k > MIN_K + 0.001 && doubleTap) {
-                fit();
+              
+              // Pointer capture retargets the event, so hit-test the real pixel.
+              const node = document
+                .elementFromPoint(event.clientX, event.clientY)
+                ?.closest?.("[data-code]");
+              const code = node?.getAttribute("data-code");
+              if (code) {
+                setHover({ code, x: px, y: py, sticky: true });
+                setInteracted(true);
               } else {
-                // Pointer capture retargets the event, so hit-test the real pixel.
-                const node = document
-                  .elementFromPoint(event.clientX, event.clientY)
-                  ?.closest?.("[data-code]");
-                const code = node?.getAttribute("data-code");
-                if (code) {
-                  setHover({ code, x: px, y: py, sticky: true });
-                  setInteracted(true);
-                } else {
-                  setHover(null);
-                }
+                setHover(null);
               }
             }
           }
@@ -456,7 +452,7 @@ export default function WorldMap({
         };
       }
     },
-    [commit, fit],
+    [commit],
   );
 
   /* Auto-dismiss tapped tooltips so the phone view stays clean. */
