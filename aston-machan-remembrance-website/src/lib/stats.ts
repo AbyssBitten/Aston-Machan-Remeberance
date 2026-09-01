@@ -1,4 +1,4 @@
-import { desc, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { remembrances } from "@/db/schema";
 import { periodWindows, type PeriodKey } from "@/lib/periods";
@@ -142,4 +142,60 @@ export async function recordRemembrance(country: DescribedCountry): Promise<numb
     })
     .returning({ id: remembrances.id });
   return row?.id ?? 0;
+}
+
+/** Reads back a single remembrance so a returning visitor sees their own pin. */
+export async function getRemembranceCountry(
+  id: number,
+  notBefore: Date,
+): Promise<DescribedCountry | null> {
+  const [row] = await db
+    .select({
+      code: remembrances.countryCode,
+      name: remembrances.countryName,
+      region: remembrances.region,
+      emoji: remembrances.flag,
+      precision: remembrances.precision,
+    })
+    .from(remembrances)
+    .where(and(eq(remembrances.id, id), gte(remembrances.rememberedAt, notBefore)))
+    .limit(1);
+
+  if (!row) return null;
+  return {
+    code: row.code,
+    name: row.name,
+    region: row.region,
+    emoji: row.emoji,
+    precision: Number(row.precision),
+  };
+}
+
+/**
+ * Corrects where a visitor is remembering from.
+ *
+ * The previous record — the one guessed from their IP address — is DELETED from
+ * the database, and the country they picked is inserted in its place, so the
+ * tallies move with them instead of counting them twice.
+ *
+ * `notBefore` scopes the delete to the current UTC day: a stale id from an
+ * earlier day can never remove a historical record.
+ */
+export async function replaceRemembrance(
+  previousId: number | null | undefined,
+  newCountry: DescribedCountry,
+  notBefore: Date,
+): Promise<{ id: number; replaced: boolean }> {
+  let replaced = false;
+
+  if (previousId && Number.isInteger(previousId) && previousId > 0) {
+    const removed = await db
+      .delete(remembrances)
+      .where(and(eq(remembrances.id, previousId), gte(remembrances.rememberedAt, notBefore)))
+      .returning({ id: remembrances.id });
+    replaced = removed.length > 0;
+  }
+
+  const id = await recordRemembrance(newCountry);
+  return { id, replaced };
 }
