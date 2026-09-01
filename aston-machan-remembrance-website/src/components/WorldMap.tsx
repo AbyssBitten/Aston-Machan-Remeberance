@@ -651,15 +651,6 @@ export default function WorldMap({
           >
             <IconTarget />
           </button>
-          <button
-            type="button"
-            className="map-ctrl"
-            aria-label="Fit the whole world"
-            disabled={!zoomed}
-            onClick={fit}
-          >
-            <IconFit />
-          </button>
         </div>
 
         <div className="map-zoom-badge" data-visible={zoomed ? "true" : "false"}>
