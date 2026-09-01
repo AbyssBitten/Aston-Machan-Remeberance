@@ -1,4 +1,4 @@
-import { desc, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { remembrances } from "@/db/schema";
 import { periodWindows, type PeriodKey } from "@/lib/periods";
@@ -142,4 +142,19 @@ export async function recordRemembrance(country: DescribedCountry): Promise<numb
     })
     .returning({ id: remembrances.id });
   return row?.id ?? 0;
+}
+
+/**
+ * Replaces a visitor's previous remembrance with their chosen country.
+ * The previous record (taken from IP or previous choice) is deleted from the
+ * database, and the new country record is inserted instead.
+ */
+export async function replaceRemembrance(
+  previousId: number | null | undefined,
+  newCountry: DescribedCountry,
+): Promise<number> {
+  if (previousId && Number.isInteger(previousId) && previousId > 0) {
+    await db.delete(remembrances).where(eq(remembrances.id, previousId));
+  }
+  return await recordRemembrance(newCountry);
 }
