@@ -95,14 +95,10 @@ export default function WorldMap({
   stats,
   yourCountry,
   awake,
-  busy = false,
-  onSelectCountry,
 }: {
   stats: StatsPayload;
   yourCountry: DescribedCountry | null;
   awake: boolean;
-  busy?: boolean;
-  onSelectCountry?: (code: string) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const layerRef = useRef<HTMLDivElement | null>(null);
@@ -399,7 +395,7 @@ export default function WorldMap({
     [apply],
   );
 
-  const endGesture = useCallback(
+const endGesture = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       const wasTracking = pointers.current.has(event.pointerId);
       pointers.current.delete(event.pointerId);
@@ -425,11 +421,9 @@ export default function WorldMap({
               const code = node?.getAttribute("data-code");
               
               if (code) {
+                // Shows the country tooltip only without changing user's country
                 setHover({ code, x: px, y: py, sticky: true });
                 setInteracted(true);
-                if (!busy) {
-                  onSelectCountry?.(code);
-                }
               } else if (event.pointerType !== "mouse") {
                 setHover(null);
               }
@@ -451,7 +445,7 @@ export default function WorldMap({
         };
       }
     },
-    [busy, commit, onSelectCountry],
+    [commit],
   );
 
   /* Auto-dismiss tapped tooltips */
